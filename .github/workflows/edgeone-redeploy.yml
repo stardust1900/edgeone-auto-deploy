@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # ─── 步骤1: 获取目标仓库最新 commit SHA ───
       - name: Get latest commit SHA from target repo
@@ -30,7 +30,7 @@ jobs:
       # ─── 步骤2: 从 cache 读取上次记录的 SHA ───
       - name: Restore last recorded SHA from cache
         id: cache_sha
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .last_sha
           key: repo-sha-${{ env.TARGET_REPO }}-${{ env.TARGET_BRANCH }}
