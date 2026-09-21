@@ -1,0 +1,84 @@
+name: EdgeOne Auto Redeploy
+
+on:
+  schedule:
+    # 每 2 小时触发一次（UTC 时间）
+    - cron: '0 */2 * * *'
+  workflow_dispatch:  # 允许手动触发，方便测试
+
+env:
+  TARGET_REPO: "1c7/chinese-independent-developer"
+  TARGET_BRANCH: "master"
+
+jobs:
+  check-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ─── 步骤1: 获取目标仓库最新 commit SHA ───
+      - name: Get latest commit SHA from target repo
+        id: get_sha
+        run: |
+          LATEST_SHA=$(curl -s -H "Accept: application/vnd.github.sha" \
+            "https://api.github.com/repos/${{ env.TARGET_REPO }}/commits/${{ env.TARGET_BRANCH }}")
+          echo "latest_sha=${LATEST_SHA}" >> $GITHUB_OUTPUT
+          echo "Latest SHA: ${LATEST_SHA}"
+
+      # ─── 步骤2: 从 cache 读取上次记录的 SHA ───
+      - name: Restore last recorded SHA from cache
+        id: cache_sha
+        uses: actions/cache@v4
+        with:
+          path: .last_sha
+          key: repo-sha-${{ env.TARGET_REPO }}-${{ env.TARGET_BRANCH }}
+
+      # ─── 步骤3: 对比 SHA，判断是否有更新 ───
+      - name: Compare SHA and decide whether to deploy
+        id: check_update
+        run: |
+          CURRENT_SHA="${{ steps.get_sha.outputs.latest_sha }}"
+
+          if [ -f .last_sha ]; then
+            LAST_SHA=$(cat .last_sha)
+            echo "Last recorded SHA: ${LAST_SHA}"
+          else
+            echo "No previous SHA found (first run)"
+            LAST_SHA=""
+          fi
+
+          if [ "${CURRENT_SHA}" != "${LAST_SHA}" ]; then
+            echo "🔄 Repository has been updated!"
+            echo "  Old SHA: ${LAST_SHA}"
+            echo "  New SHA: ${CURRENT_SHA}"
+            echo "should_deploy=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ No changes detected, skip deployment"
+            echo "should_deploy=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ─── 步骤4: 触发 EdgeOne Pages 部署钩子 ───
+      - name: Trigger EdgeOne Pages Deploy Hook
+        if: steps.check_update.outputs.should_deploy == 'true'
+        run: |
+          echo "🚀 Triggering EdgeOne Pages deployment..."
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "${{ secrets.EDGEONE_DEPLOY_HOOK_URL }}" \
+            -H "Content-Type: application/json")
+          echo "Deploy Hook Response Code: ${HTTP_CODE}"
+
+          if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
+            echo "✅ Deployment triggered successfully"
+          else
+            echo "❌ Failed to trigger deployment (HTTP ${HTTP_CODE})"
+            exit 1
+          fi
+
+      # ─── 步骤5: 更新记录的 SHA ───
+      - name: Update recorded SHA
+        if: steps.check_update.outputs.should_deploy == 'true'
+        run: |
+          echo "${{ steps.get_sha.outputs.latest_sha }}" > .last_sha
+          echo "Updated .last_sha to ${{ steps.get_sha.outputs.latest_sha }}"

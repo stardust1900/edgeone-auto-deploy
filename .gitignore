@@ -1,0 +1,5 @@
+# GitHub Actions 运行期自动生成的 SHA 缓存文件
+.last_sha
+
+# 部署日志目录（增强方案可选启用）
+logs/
