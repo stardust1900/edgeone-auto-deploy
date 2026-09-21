@@ -16,8 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read   # checkout / 读取仓库
-      actions: read    # 允许跨 run 下载 artifact（download-artifact@v5 默认仅限当前 run）
+      contents: write   # 把更新后的 .last_sha 提交回仓库持久化
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -31,32 +30,8 @@ jobs:
           echo "latest_sha=${LATEST_SHA}" >> $GITHUB_OUTPUT
           echo "Latest SHA: ${LATEST_SHA}"
 
-      # ─── 步骤2: 找到上一次成功的运行，用于跨 run 取回 artifact ───
-      # download-artifact@v5 默认只能下载“当前 run”的 artifact，必须显式指定 run-id
-      - name: Find previous successful run
-        id: prev_run
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # 取同一 workflow、同一分支、最近一次“成功”的运行（排除当前运行）
-          RUN_ID=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=100" \
-            --jq '.workflow_runs[] | select(.name == "${{ github.workflow }}" and .head_branch == "${{ github.ref_name }}" and .conclusion == "success") | .id' \
-            | grep -v "^${{ github.run_id }}$" | head -n1)
-          echo "prev_run_id=${RUN_ID}" >> $GITHUB_OUTPUT
-          echo "Previous run id: ${RUN_ID:-<none>}"
-
-      # ─── 步骤2.5: 从“上一次运行”的 artifact 读取上次记录的 SHA ───
-      - name: Restore last recorded SHA
-        id: restore_sha
-        if: steps.prev_run.outputs.prev_run_id != ''
-        uses: actions/download-artifact@v5
-        with:
-          name: last-sha
-          path: .
-          run-id: ${{ steps.prev_run.outputs.prev_run_id }}
-        continue-on-error: true   # 上一次运行未产生 artifact 时跳过（兜底：当首次部署处理）
-
-      # ─── 步骤3: 对比 SHA，判断是否有更新 ───
+      # ─── 步骤2: 对比 SHA，判断是否有更新 ───
+      # 上次部署的 SHA 直接由 .last_sha 文件持久化在仓库里（无需 artifact / cache 跨 run）
       - name: Compare SHA and decide whether to deploy
         id: check_update
         run: |
@@ -80,7 +55,7 @@ jobs:
             echo "should_deploy=false" >> $GITHUB_OUTPUT
           fi
 
-      # ─── 步骤4: 触发 EdgeOne Pages 部署钩子 ───
+      # ─── 步骤3: 触发 EdgeOne Pages 部署钩子 ───
       - name: Trigger EdgeOne Pages Deploy Hook
         if: steps.check_update.outputs.should_deploy == 'true'
         run: |
@@ -97,17 +72,16 @@ jobs:
             exit 1
           fi
 
-      # ─── 步骤5: 更新记录的 SHA 并上传 artifact 持久化 ───
-      - name: Update recorded SHA
+      # ─── 步骤4: 更新记录的 SHA 并提交回仓库（持久化，供下次对比） ───
+      - name: Update recorded SHA and commit back
         if: steps.check_update.outputs.should_deploy == 'true'
         run: |
           echo "${{ steps.get_sha.outputs.latest_sha }}" > .last_sha
-          echo "Updated .last_sha to ${{ steps.get_sha.outputs.latest_sha }}"
-
-      - name: Save recorded SHA to artifact
-        if: steps.check_update.outputs.should_deploy == 'true'
-        uses: actions/upload-artifact@v5
-        with:
-          name: last-sha
-          path: .last_sha
-          overwrite: true
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .last_sha
+          git commit -m "chore: record deployed SHA ${{ steps.get_sha.outputs.latest_sha }}" \
+            || echo "nothing to commit"
+          # 若因并发 run 导致非快进，push 失败不标红（部署钩子已触发，幂等）
+          git push \
+            || echo "push failed (likely a concurrent run); deployment was already triggered"
