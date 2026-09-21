@@ -2,8 +2,9 @@ name: EdgeOne Auto Redeploy
 
 on:
   schedule:
-    # 每 2 小时触发一次（UTC 时间）
-    - cron: '0 */2 * * *'
+    # 临时高频测试：每 10 分钟触发一次，用于验证 GitHub 调度是否生效
+    # 验证通过后改回：cron: '0 */2 * * *'（每 2 小时，UTC 整点）
+    - cron: '*/10 * * * *'
   workflow_dispatch:  # 允许手动触发，方便测试
 
 env:
