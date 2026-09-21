@@ -15,6 +15,9 @@ jobs:
   check-and-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read   # checkout / 读取仓库
+      actions: read    # 允许跨 run 下载 artifact（download-artifact@v5 默认仅限当前 run）
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -28,15 +31,30 @@ jobs:
           echo "latest_sha=${LATEST_SHA}" >> $GITHUB_OUTPUT
           echo "Latest SHA: ${LATEST_SHA}"
 
-      # ─── 步骤2: 从 artifact 读取上次记录的 SHA ───
-      # 注意：不能用 cache 持久化可变状态（key 命中后不会覆盖保存），改用 artifact
+      # ─── 步骤2: 找到上一次成功的运行，用于跨 run 取回 artifact ───
+      # download-artifact@v5 默认只能下载“当前 run”的 artifact，必须显式指定 run-id
+      - name: Find previous successful run
+        id: prev_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # 取同一 workflow、同一分支、最近一次“成功”的运行（排除当前运行）
+          RUN_ID=$(gh api "repos/${{ github.repository }}/actions/runs?per_page=100" \
+            --jq '.workflow_runs[] | select(.name == "${{ github.workflow }}" and .head_branch == "${{ github.ref_name }}" and .conclusion == "success") | .id' \
+            | grep -v "^${{ github.run_id }}$" | head -n1)
+          echo "prev_run_id=${RUN_ID}" >> $GITHUB_OUTPUT
+          echo "Previous run id: ${RUN_ID:-<none>}"
+
+      # ─── 步骤2.5: 从“上一次运行”的 artifact 读取上次记录的 SHA ───
       - name: Restore last recorded SHA
         id: restore_sha
+        if: steps.prev_run.outputs.prev_run_id != ''
         uses: actions/download-artifact@v5
         with:
           name: last-sha
           path: .
-        continue-on-error: true   # 首次无 artifact 时跳过
+          run-id: ${{ steps.prev_run.outputs.prev_run_id }}
+        continue-on-error: true   # 上一次运行未产生 artifact 时跳过（兜底：当首次部署处理）
 
       # ─── 步骤3: 对比 SHA，判断是否有更新 ───
       - name: Compare SHA and decide whether to deploy
