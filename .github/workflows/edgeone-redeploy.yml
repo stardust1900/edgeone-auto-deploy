@@ -2,10 +2,10 @@ name: EdgeOne Auto Redeploy
 
 on:
   schedule:
-    # 临时高频测试：每 10 分钟触发一次，用于验证 GitHub 调度是否生效
-    # 验证通过后改回：cron: '0 */2 * * *'（每 2 小时，UTC 整点）
-    - cron: '*/10 * * * *'
-  workflow_dispatch:  # 允许手动触发，方便测试
+    # GitHub 自带 schedule 在本仓库实测多次不触发（不可靠），仅作冗余备份
+    # 实际每 2 小时触发由外部定时器（cron-job.org）调用 workflow_dispatch API 完成
+    - cron: '0 */2 * * *'
+  workflow_dispatch:  # 允许手动触发 / 外部定时器调用 API 触发
 
 env:
   TARGET_REPO: "1c7/chinese-independent-developer"
@@ -28,13 +28,15 @@ jobs:
           echo "latest_sha=${LATEST_SHA}" >> $GITHUB_OUTPUT
           echo "Latest SHA: ${LATEST_SHA}"
 
-      # ─── 步骤2: 从 cache 读取上次记录的 SHA ───
-      - name: Restore last recorded SHA from cache
-        id: cache_sha
-        uses: actions/cache@v5
+      # ─── 步骤2: 从 artifact 读取上次记录的 SHA ───
+      # 注意：不能用 cache 持久化可变状态（key 命中后不会覆盖保存），改用 artifact
+      - name: Restore last recorded SHA
+        id: restore_sha
+        uses: actions/download-artifact@v5
         with:
-          path: .last_sha
-          key: repo-sha-${{ env.TARGET_REPO }}-${{ env.TARGET_BRANCH }}
+          name: last-sha
+          path: .
+        continue-on-error: true   # 首次无 artifact 时跳过
 
       # ─── 步骤3: 对比 SHA，判断是否有更新 ───
       - name: Compare SHA and decide whether to deploy
@@ -77,9 +79,17 @@ jobs:
             exit 1
           fi
 
-      # ─── 步骤5: 更新记录的 SHA ───
+      # ─── 步骤5: 更新记录的 SHA 并上传 artifact 持久化 ───
       - name: Update recorded SHA
         if: steps.check_update.outputs.should_deploy == 'true'
         run: |
           echo "${{ steps.get_sha.outputs.latest_sha }}" > .last_sha
           echo "Updated .last_sha to ${{ steps.get_sha.outputs.latest_sha }}"
+
+      - name: Save recorded SHA to artifact
+        if: steps.check_update.outputs.should_deploy == 'true'
+        uses: actions/upload-artifact@v5
+        with:
+          name: last-sha
+          path: .last_sha
+          overwrite: true
